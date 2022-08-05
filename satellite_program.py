@@ -37,12 +37,10 @@ class program_manage:
         self.lock = Lock()
         self.ts = self.load.timescale()
 
-        self.trajectory_exist = False
-
-        self.trajectory_active = True
-        self.satellite_active = True
-        self.satellite_vector_active = True
-        self.earth_axis_active = True
+        self.trajectory_active = False
+        self.satellite_active = False
+        self.satellite_vector_active = False
+        self.earth_axis_active = False
         self.time_gap = None
 
     def start_program(self):
@@ -88,12 +86,31 @@ class program_manage:
 
 
         for i in range(3):
-            temp = pv.PolyData(np.array([self.sat_location + sat_att[i],self.sat_location]), lines=np.array([2,0,1]))
-            self.actor['satellite_axis'].append(self.pl.add_mesh(temp, line_width = 1.5, color = self.color[i], name = 'satellite_axis%d' % i))
+            self.polydata['satellite_axis%d' % i] = pv.PolyData(np.array([self.sat_location + sat_att[i],self.sat_location]), lines=np.array([2,0,1]))
+            self.actor['satellite_axis'].append(self.pl.add_mesh(self.polydata['satellite_axis%d' % i], line_width = 1.5, color = self.color[i], name = 'satellite_axis%d' % i))
 
         for i in range(3):
-            temp = pv.PolyData(np.array([[0,0,0], basis[i]/500*self.earth_radius*1.3]), lines=np.array([2,0,1]))
-            self.actor['earth_axis'].append(self.pl.add_mesh(temp,line_width = 1.5, color = self.color[i], name = 'earth_axis%d' % i))
+            self.polydata['earth_axis%d' % i] = pv.PolyData(np.array([[0,0,0], basis[i]/500*self.earth_radius*1.3]), lines=np.array([2,0,1]))
+            self.actor['earth_axis'].append(self.pl.add_mesh(self.polydata['earth_axis%d' % i],line_width = 1.5, color = self.color[i], name = 'earth_axis%d' % i))
+
+        '''        
+            for i in range(5):
+            self.polydata['satellite_vector%d' % i] = pv.PolyData(np.array([[0, 0, 0], [0, 0, 0]]), lines=np.array([2,0,1]))
+            self.actor['satellite_vector'].append(self.pl.add_mesh(self.polydata['satellite_vector%d' % i]), line_width = 1.5, color = self.color[i+3])
+        '''
+        actor_bright = []
+        actor_dark = []
+
+        for i in range(5):
+            self.polydata['satellite_bright_trajectory%d' % i] = pv.PolyData(np.array([[0,0,0],[0,0,0]]), lines = np.array([2,0,1]))
+            actor_bright.append(self.pl.add_mesh(self.polydata['satellite_bright_trajectory%d' % i], line_width = 1.5, color = 'white'))
+
+        for i in range(5):
+            self.polydata['satellite_dark_trajectory%d' % i] = pv.PolyData(np.array([[0,0,0],[0,0,0]]), lines = np.array([2,0,1]))
+            actor_dark.append(self.pl.add_mesh(self.polydata['satellite_dark_trajectory%d' % i], line_width = 1.5, color = 'gray'))
+
+        self.actor['satellite_dark_trajectory'] = actor_dark
+        self.actor['satellite_bright_trajectory'] = actor_bright
 
         self.pl.add_key_event('t',self.trajectory_callback)
         self.pl.add_key_event('s',self.satellite_callback)
@@ -120,8 +137,6 @@ class program_manage:
 
     def trajectory_callback(self):
         print('key pushed t')
-        if not self.trajectory_exist:
-            return
         
         if self.trajectory_active:
             self.lock.acquire()
@@ -194,23 +209,15 @@ class program_manage:
         self.sat_dcm = self.q_t_d(data_update.attitude)
         sat_att = (self.sat_dcm @ basis).T
 
-        '''
-        for axis in self.actor['satellite_axis']:
-            self.pl.remove_actor(axis)
-        self.actor['satellite_axis'] = []
-        '''
-
         for i in range(3):
-            self.polydata['satellite_axis%d' % i] = pv.PolyData(np.array([self.sat_location + sat_att[i],self.sat_location]), lines=np.array([2,0,1]))
-            self.actor['satellite_axis'].append(self.pl.add_mesh(self.polydata['satellite_axis%d' % i], line_width = 1.5, color = self.color[i], name = 'satellite_axis%d' % i))
-
-        for vector_name in self.actor['satellite_vector'].keys():
-            self.pl.remove_actor(self.actor['satellite_vector'][vector_name])
-            self.actor['satellite_vector'][vector_name] = None
+            self.polydata['satellite_axis%d' % i].points = np.array([self.sat_location + sat_att[i],self.sat_location])
 
         for (name, color, vector), i in zip(self.sat_vector, range(len(self.sat_vector))):
-            self.polydata['satellite_vector%d' % i] = pv.PolyData(np.array([self.sat_location , self.sat_location + 400*(self.sat_dcm@((vector).T)).T]), lines=np.array([2,0,1]))
-            self.actor['satellite_vector'][name] = (self.pl.add_mesh(self.polydata['satellite_vector%d' % i], line_width = 1.5, color = color, name = 'satellite_vector%d' % i))
+            if 'satellite_vector(%s)' % name in self.polydata:
+                self.polydata['satellite_vector(%s)' % name].points = np.array([self.sat_location , self.sat_location + 400*(self.sat_dcm@((vector).T)).T])
+            else:    
+                self.polydata['satellite_vector(%s)' % name] = pv.PolyData(np.array([self.sat_location , self.sat_location + 400*(self.sat_dcm@((vector).T)).T]), lines=np.array([2,0,1]))
+                self.actor['satellite_vector'][name] = (self.pl.add_mesh(self.polydata['satellite_vector(%s)' % name], line_width = 1.5, color = color, name = 'satellite_vector%d' % i))
 
         data_update = None
     
@@ -265,19 +272,15 @@ class program_manage:
         for ele in self.actor['satellite_bright_trajectory']:
             self.pl.remove_actor(ele)
 
-        for ele in sat_trac[0]:
-            temp = pv.PolyData(ele, lines=np.array([[2,i,i+1] for i in range(len(ele)-1)]))
-            actor_bright.append(self.pl.add_mesh(temp, line_width = 1.5, color = 'white'))
+        for ele, i in zip(sat_trac[0],range(len(sat_trac[0]))):
+            self.polydata['satellite_bright_trajectory%d' % i].points = ele
+            self.polydata['satellite_bright_trajectory%d' % i].lines = [[2,j,j+1] for j in range(len(ele)-1)]
 
-        for ele in sat_trac[1]:
-            temp = pv.PolyData(ele, lines=np.array([[2,i,i+1] for i in range(len(ele)-1)]))
-            actor_dark.append(self.pl.add_mesh(temp, line_width = 1.5, color = 'gray'))
-
-        self.actor['satellite_dark_trajectory'] = actor_dark
-        self.actor['satellite_bright_trajectory'] = actor_bright
+        for ele, i in zip(sat_trac[1],range(len(sat_trac[1]))):
+            self.polydata['satellite_dark_trajectory%d' % i].points = ele
+            self.polydata['satellite_dark_trajectory%d' % i].lines = [[2,j,j+1] for j in range(len(ele)-1)]
 
         tle_update = None
-        self.trajectory_exist = True
 
     def normalize(self, value):
         if value > 1:
