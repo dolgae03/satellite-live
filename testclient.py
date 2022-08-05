@@ -89,7 +89,7 @@ client_socket.send(time_packet(2022,8,5,0,0,0))
 client_socket.send(attitude_packet([0,0,0,1]))
 client_socket.send(location_packet([1,0,0]))
 client_socket.send(satellite_end_packet())
-client_socket.send(tle_packet(line1, line2, line3))
+#client_socket.send(tle_packet(line1, line2, line3))
 
 #time.sleep(10)
 

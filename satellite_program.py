@@ -20,6 +20,8 @@ class satrac_info:
         
 class program_manage:
     def __init__(self, gs_location, sat_location):
+        self.program_mode = 'live'
+
         self.load = Loader('./data')
         self.gs_location = gs_location
         self.sat_location = sat_location
@@ -42,10 +44,13 @@ class program_manage:
         self.satellite_vector_active = False
         self.earth_axis_active = False
         self.time_gap = None
+        self.now_idx = -1
+        
 
     def start_program(self):
         global gs_mesh
         global recieve_time, recieve_location, recieve_attitude, recieve_vec
+        global data_idx, live_idx
 
         sphere = pv.Sphere(radius=self.earth_radius, theta_resolution=240, phi_resolution=240, start_theta=270.0001, end_theta=270)
         sphere.active_t_coords = np.zeros((sphere.points.shape[0], 2))
@@ -74,16 +79,21 @@ class program_manage:
         gs_mesh = reader.read()
         gs_scale = 2
         gs_dcm = rotation_matrix_from_vectors(np.array([0,1,0]), np.array(gs_location))
+        
+        '''
+        reader = pv.get_reader('./data/satellite.stl')
+        self.polydata['satellite'] = reader.read()
+        self.sat_scale = 30
+        '''
 
         for i in range(gs_mesh.points.shape[0]):
             gs_mesh.points[i] = (gs_dcm @ (gs_mesh.points[i].T)).T * gs_scale + gs_location
-
-        #for i in range(sat_mesh.points.shape[0]):
-        #    sat_mesh.points[i] = ((sat_dcm @ (sat_mesh.points[i].T)).T)*sat_scale + sat_location
-
+        '''
+        for i in range(self.polydata['satellite'].points.shape[0]):
+            self.polydata['satellite'].points[i] = ((self.sat_dcm @ (self.polydata['satellite'].points[i].T)).T)*self.sat_scale + self.sat_location
+        '''
         self.actor['groundstation'] = self.pl.add_mesh(gs_mesh)
-        #self.actor['satellite'] = pl.add_mesh(sat_mesh)
-
+        #self.actor['satellite'] = self.pl.add_mesh(self.polydata['satellite'], name = 'satellite')
 
         for i in range(3):
             self.polydata['satellite_axis%d' % i] = pv.PolyData(np.array([self.sat_location + sat_att[i],self.sat_location]), lines=np.array([2,0,1]))
@@ -93,11 +103,6 @@ class program_manage:
             self.polydata['earth_axis%d' % i] = pv.PolyData(np.array([[0,0,0], basis[i]/500*self.earth_radius*1.3]), lines=np.array([2,0,1]))
             self.actor['earth_axis'].append(self.pl.add_mesh(self.polydata['earth_axis%d' % i],line_width = 1.5, color = self.color[i], name = 'earth_axis%d' % i))
 
-        '''        
-            for i in range(5):
-            self.polydata['satellite_vector%d' % i] = pv.PolyData(np.array([[0, 0, 0], [0, 0, 0]]), lines=np.array([2,0,1]))
-            self.actor['satellite_vector'].append(self.pl.add_mesh(self.polydata['satellite_vector%d' % i]), line_width = 1.5, color = self.color[i+3])
-        '''
         actor_bright = []
         actor_dark = []
 
@@ -116,22 +121,36 @@ class program_manage:
         self.pl.add_key_event('s',self.satellite_callback)
         self.pl.add_key_event('v',self.satellite_vector_callback)
         self.pl.add_key_event('e',self.earth_axis_callback)
+        self.pl.add_key_event('n',self.prev_callback)
+        self.pl.add_key_event('m',self.next_callback)
+        self.pl.add_key_event('l',self.live_update_mode)
+        self.pl.add_key_event('k',self.view_mode)
 
         self.pl.show(interactive_update=True)
 
         prev_time = time.time()
 
         while True:
-            if data_update != None:
+            if live_idx < len(data_queue)-1 and self.program_mode == 'live':
+                live_idx += 1
+                self.now_idx = data_idx = live_idx
                 self.update_satellite()
+                print(live_idx)
 
-            if tle_update != None:
+            if tle_update != None and self.program_mode == 'live':
                 print('hi')
                 self.update_trajectory()
-                
-            self.pl.update(stime = 1, force_redraw = False)
             
-            if time.time()- prev_time > 1000:
+            if self.program_mode == 'view' and self.now_idx != data_idx:
+                live_idx = self.now_idx = data_idx
+                
+                self.update_satellite()
+
+
+            self.pl.update(stime = 1, force_redraw = False)
+
+            if time.time() - prev_time > 1:
+            
                 prev_time = time.time()
                 self.pl.update()
 
@@ -154,7 +173,6 @@ class program_manage:
                 self.pl.add_actor(ele)
             self.lock.release()
             self.trajectory_active = True
-
     def satellite_vector_callback(self):
         if self.satellite_vector_active :
             self.lock.acquire()
@@ -186,18 +204,45 @@ class program_manage:
             for ele in self.actor['earth_axis']:
                 self.pl.add_actor(ele)
             self.earth_axis_active = True
+    def prev_callback(self):
+        if self.view_mode == 'live':
+            return
 
+        global data_idx
+        
+        data_idx = max(data_idx-1, 0)
+        print(data_idx)
+
+    def next_callback(self):
+        if self.view_mode == 'live':
+            return
+        
+        global data_idx
+        
+        data_idx = min(data_idx+1, len(data_queue)-1)
+        print(data_idx)
+
+    def live_update_mode(self):
+        self.program_mode = 'live'
+    def view_mode(self):
+        self.program_mode = 'view'
             
 
     def update_satellite(self):
-        global data_update
+        global data_update, data_queue, data_idx
+
+        if self.program_mode == 'live':
+            data_update = data_queue[live_idx]
+        else :
+            data_update = data_queue[data_idx]
+        #all_data = {}
 
         #print('hi')
         basis = np.array([[500,0,0],
-                            [0,500,0],
-                            [0,0,500]])
+                          [0,500,0],
+                          [0,0,500]])
 
-        end_t = data_update.t[:]
+        #all_data['time'] = self.ts.utc(*tuple(data_update.t))
     
         self.now_time = self.ts.utc(*tuple(data_update.t))
         self.end_time = self.ts.utc(*tuple(data_update.t[:5] + [data_update.t[5] + 10000]))
@@ -209,17 +254,23 @@ class program_manage:
         self.sat_dcm = self.q_t_d(data_update.attitude)
         sat_att = (self.sat_dcm @ basis).T
 
+        '''
+        for i in range(self.polydata['satellite'].points.shape[0]):
+            self.polydata['satellite'].points[i] = ((self.sat_dcm @ (self.polydata['satellite'].points[i].T)).T)*self.sat_scale + self.sat_location
+        '''
+
         for i in range(3):
             self.polydata['satellite_axis%d' % i].points = np.array([self.sat_location + sat_att[i],self.sat_location])
-
+            #all_data['satellite_axis%d' % i] = np.array([self.sat_location + sat_att[i],self.sat_location])
         for (name, color, vector), i in zip(self.sat_vector, range(len(self.sat_vector))):
             if 'satellite_vector(%s)' % name in self.polydata:
                 self.polydata['satellite_vector(%s)' % name].points = np.array([self.sat_location , self.sat_location + 400*(self.sat_dcm@((vector).T)).T])
+                #all_data['satellite_vector(%s)' % name] = np.array([self.sat_location , self.sat_location + 400*(self.sat_dcm@((vector).T)).T])
             else:    
                 self.polydata['satellite_vector(%s)' % name] = pv.PolyData(np.array([self.sat_location , self.sat_location + 400*(self.sat_dcm@((vector).T)).T]), lines=np.array([2,0,1]))
                 self.actor['satellite_vector'][name] = (self.pl.add_mesh(self.polydata['satellite_vector(%s)' % name], line_width = 1.5, color = color, name = 'satellite_vector%d' % i))
-
-        data_update = None
+                #all_data['satellite_vector(%s)' % name] = np.array([self.sat_location , self.sat_location + 400*(self.sat_dcm@((vector).T)).T])
+        
     
     def update_trajectory(self):
         global tle_update
@@ -383,15 +434,15 @@ def data_processing(buf):
             #print(len(buf),buf, recieve_attitude)
             buf = buf[20:]
         elif buf[2] == 0x03:
-            print(buf,len(buf[:18 + buf[3] + buf[4]]))
+            #print(buf,len(buf[:18 + buf[3] + buf[4]]))
             _, _, _, _, _,  x, y, z, name, color = struct.unpack(('5B3f%ds%ds' % (buf[3],buf[4])),buf[:20 + buf[3] + buf[4]])
             
             recieve_vec.append((name.decode(),color.decode(),np.array([x, y ,z])))
-            print(len(buf),buf, recieve_vec)
+            #print(len(buf),buf, recieve_vec)
             buf = buf[20 + buf[3] + buf[4]:]
         elif buf[2] == 0x04:
             data_queue.append(satrac_info(recieve_time, recieve_location, recieve_attitude, recieve_vec))
-            data_update = data_queue[-1]
+            
             #print(data_queue, data_update)
             
             recieve_time = None
@@ -429,8 +480,9 @@ recieve_tle = None
 
 tle_update = None
 
-data_update = None
 data_queue = []
+data_idx = -1
+live_idx = -1
 
 gs_location = [6378.1,0,0]
 
