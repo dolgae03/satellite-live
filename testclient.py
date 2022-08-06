@@ -56,7 +56,7 @@ t = ts.now()
 i=0
 time_gap = ts.utc(2022,8,5,0,0,range(0,120))
 packet_list = []
-sat = satellite_packet(1)
+sat = satellite_packet(int(input()))
 
 client_socket.send(sat.time_packet(2022,8,5,0,0,0))
 client_socket.send(sat.attitude_packet([0,0,0,1]))
