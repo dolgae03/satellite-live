@@ -11,6 +11,28 @@ import struct
 
 from threading import Thread, Lock
 
+class EnableCallback:
+    def __init__(self, actor, pl):
+        self.actor = actor
+        self.pl = pl
+
+    def __call__(self):
+        for ele in self.actor:
+            self.pl.add_actor(ele)
+
+class DisableCallback:
+    def __init__(self, actor, pl):
+        self.actor = actor
+        self.pl = pl
+    
+    def __call__(self):
+        for ele in self.actor:
+            self.pl.remove_actor(ele)
+
+class SelectSatelliteCallback:
+    def __init__(self, num):
+        pass
+
 class satrac_info:
     def __init__(self, t, location, attitude, vector):
         self.t = t
@@ -126,44 +148,38 @@ class internal_function:
         rotation_matrix = np.eye(3) + kmat + kmat.dot(kmat) * ((1 - c) / (s ** 2))
         return rotation_matrix
     
-        
+    def add_actor_list(self, pl, actor):
+        for ele in actor:
+            pl.add_actor(ele)
+
+    def remove_actor_list(self, pl, actor):
+        for ele in actor:
+            pl.remove_actor(ele)
         
 class program_manage(internal_function):
     def __init__(self, gs_location, sat_location):
         self.program_mode = 'live'
         self.client_recieve = {}
 
+        self.actor = {'earth_axis':[]}
+        self.polydata = {}
+
+
         self.load = Loader('./data')
         self.gs_location = gs_location
         self.earth_radius = 6378.1
         self.eph = self.load('de421.bsp')
+        self.ts = self.load.timescale()
         
         self.data_idx = -1
-
         self.control_satellite_num = 1
-
-
-        ##############
-        self.sat_location = sat_location
-        self.actor = {'satellite_axis':[],'earth_axis':[], 'satellite_vector':{}, 'satellite_dark_trajectory':[], 'satellite_bright_trajectory':[]}
-        self.polydata = {}
-
-        self.tle = ['','','']
-
-        self.now_idx = -1
-
         self.added_satellite = {}
+        self.now_time = self.ts.now()
 
-        self.trajectory_active = False
-        self.satellite_active = False
-        self.satellite_vector_active = False
         self.earth_axis_active = True
-        self.communcation_active = False
-        ##############
 
         self.lock = Lock()
-        self.ts = self.load.timescale()
-
+        
         self.working = False
         self.time_gap = None
 
@@ -219,6 +235,7 @@ class program_manage(internal_function):
             self.polydata['earth_axis%d' % i] = pv.PolyData(np.array([[0,0,0], basis[i]/500*self.earth_radius*1.3]), lines=np.array([2,0,1]))
             self.actor['earth_axis'].append(self.pl.add_mesh(self.polydata['earth_axis%d' % i],line_width = 1.5, color = self.color[i], name = 'earth_axis%d' % i))
 
+
         self.pl.add_key_event('t',self.trajectory_callback)
         self.pl.add_key_event('s',self.satellite_callback)
         self.pl.add_key_event('v',self.satellite_vector_callback)
@@ -229,90 +246,115 @@ class program_manage(internal_function):
         self.pl.add_key_event('l',self.live_mode)
         self.pl.add_key_event('k',self.static_mode)
 
+        self.pl.add_key_event('1',self.sat1)
+        self.pl.add_key_event('2',self.sat2)
+        self.pl.add_key_event('3',self.sat3)
+        self.pl.add_key_event('4',self.sat4)
+        self.pl.add_key_event('5',self.sat5)
+
         self.pl.show(interactive_update=True)
 
         prev_time = time.time()
 
         while True:
-            a = list(self.client_recieve.keys()).copy()
-            b = list(self.client_recieve.values()).copy()
-            for satellite_num, each_client in zip(a,b):
-                if satellite_num not in self.added_satellite:
-                    self.added_satellite[satellite_num] = program_satellite(satellite_num,np.array([0,0,0]),self.pl)
-                    print(satellite_num)
-                if each_client['live_idx'] < len(each_client['data_queue'])-1 and self.program_mode == 'live':
-                    each_client['live_idx'] = len(each_client['data_queue'])-1
-                    self.now_idx = self.data_idx = each_client['live_idx']
-                    self.update_satellite(satellite_num)
+            if self.control_satellite_num in self.client_recieve:
+                a = list(self.client_recieve.keys()).copy()
+                b = list(self.client_recieve.values()).copy()
 
-                if each_client['tle_update'] != None and self.program_mode == 'live':
-                    print('hi', satellite_num)
-                    self.update_trajectory(satellite_num)
-                    print('ddd')
-                    self.update_communication(satellite_num)
-                
+                now_sat = self.client_recieve[self.control_satellite_num]
+
+                for satellite_num, each_client in zip(a,b):
+                    if satellite_num not in self.added_satellite:
+                        self.added_satellite[satellite_num] = program_satellite(satellite_num,np.array([0,0,0]),self.pl)
+                    
+                    if each_client['tle_update'] != None:
+                        self.update_trajectory(satellite_num)
+                        self.update_communication(satellite_num)
+
+                if now_sat['live_idx'] < len(now_sat['data_queue'])-1 and self.program_mode == 'live':
+                    self.now_idx = self.data_idx = now_sat['live_idx']
+                    
+                    for satellite_num, each_client in zip(a,b):
+                        each_client['live_idx'] = len(each_client['data_queue'])-1
+                        self.update_satellite(satellite_num)
+                    
                 if self.program_mode == 'view' and self.now_idx != self.data_idx:
+                    for satellite_num, each_client in zip(a,b):
+                        self.update_satellite(satellite_num)
+                    
                     self.now_idx = self.data_idx
-                    self.update_satellite(satellite_num)
 
             if time.time() - prev_time > 0.05:           
                 prev_time = time.time()
                 self.pl.update()
 
     def trajectory_callback(self):
-        print('key pushed t')
+        if self.control_satellite_num not in self.added_satellite:
+           return 
+
+        sat = self.added_satellite[self.control_satellite_num]
         
-        if self.trajectory_active:
+        if sat.trajectory_active:
             #self.working = True
-            for ele1, ele2 in zip(self.actor['satellite_dark_trajectory'],self.actor['satellite_bright_trajectory']):
-                self.pl.remove_actor(ele1)
-                self.pl.remove_actor(ele2)
+            for ele1, ele2 in zip(sat.actor['satellite_dark_trajectory'],sat.actor['satellite_bright_trajectory']):
+                sat.pl.remove_actor(ele1)
+                sat.pl.remove_actor(ele2)
             #self.working = False
-            self.trajectory_active = False
+            sat.trajectory_active = False
         else :
             #self.working = True
-            for ele1, ele2 in zip(self.actor['satellite_dark_trajectory'],self.actor['satellite_bright_trajectory']):
-                self.pl.add_actor(ele1)
-                self.pl.add_actor(ele2)
+            for ele1, ele2 in zip(sat.actor['satellite_dark_trajectory'],sat.actor['satellite_bright_trajectory']):
+                sat.pl.add_actor(ele1)
+                sat.pl.add_actor(ele2)
             #self.working = False
-            self.trajectory_active = True
+            sat.trajectory_active = True
+
     def satellite_vector_callback(self):
-        if self.satellite_vector_active :
-            for ele in self.actor['satellite_vector'].values():
-                self.pl.remove_actor(ele)
-            self.satellite_vector_active = False
+        if self.control_satellite_num not in self.added_satellite:
+           return 
+
+        sat = self.added_satellite[self.control_satellite_num]
+
+        if sat.satellite_vector_active :
+            self.remove_actor_list(self.pl, sat.actor['satellite_vector'].values())
+            sat.satellite_vector_active = False
         else :
-            for ele in self.actor['satellite_vector'].values():
-                self.pl.add_actor(ele)
-            self.satellite_vector_active = True
+            self.add_actor_list(self.pl, sat.actor['satellite_vector'].values())
+            sat.satellite_vector_active = True
+
     def satellite_callback(self):
-        if self.satellite_active :
-            for ele in self.actor['satellite_axis']:
-                self.pl.remove_actor(ele)
-            self.satellite_active = False
+        if self.control_satellite_num not in self.added_satellite:
+           return 
+
+        sat = self.added_satellite[self.control_satellite_num]
+
+        if sat.satellite_active :
+            self.remove_actor_list(self.pl, sat.actor['satellite_axis'])
+            sat.satellite_active = False
         else :
-            for ele in self.actor['satellite_axis']:
-                self.pl.add_actor(ele)
-            self.satellite_active = True
+            self.add_actor_list(self.pl, sat.actor['satellite_axis'])
+            sat.satellite_active = True
+
     def earth_axis_callback(self):
         if self.earth_axis_active:
-            for ele in self.actor['earth_axis']:
-                self.pl.remove_actor(ele)
+            self.remove_actor_list(self.pl, self.actor['earth_axis'])
             self.earth_axis_active = False
         else :
-            for ele in self.actor['earth_axis']:
-                self.pl.add_actor(ele)
+            self.add_actor_list(self.pl, self.actor['earth_axis'])
             self.earth_axis_active = True
+
     def communication_callback(self):
-        
-        if self.communcation_active:
-            for ele in self.actor['satellite_communication_trajectory']:
-                self.pl.remove_actor(ele)
-            self.communcation_active = False
+        if self.control_satellite_num not in self.added_satellite:
+           return 
+
+        sat = self.added_satellite[self.control_satellite_num]
+
+        if sat.communcation_active:
+            self.remove_actor_list(self.pl, sat.actor['satellite_communication_trajectory'])
+            sat.communcation_active = False
         else :
-            for ele in self.actor['satellite_communication_trajectory']:
-                self.pl.add_actor(ele)
-            self.communcation_active = True    
+            self.add_actor_list(self.pl, sat.actor['satellite_communication_trajectory'])
+            sat.communcation_active = True    
     def prev_callback(self):
         if self.program_mode == 'live':
             return
@@ -322,22 +364,54 @@ class program_manage(internal_function):
         if self.program_mode == 'live':
             return
         
-        self.data_idx = self.data_idx + 1
+        self.data_idx = min(self.data_idx + 1,len(self.client_recieve[self.control_satellite_num]['data_queue'])-1)
     def live_mode(self):
         self.program_mode = 'live'
     def static_mode(self):
         self.program_mode = 'view'
 
+    def sat1(self):
+        self.control_satellite_num = 1
+    def sat2(self):
+        self.control_satellite_num = 2
+    def sat3(self):
+        self.control_satellite_num = 3
+    def sat4(self):
+        self.control_satellite_num = 4
+    def sat5(self):
+        self.control_satellite_num = 5
+
 
     def update_satellite(self, satellite_num):
         each_client = self.client_recieve[satellite_num]
         now_sat = self.added_satellite[satellite_num]
-
-        print(id(now_sat),id(self.added_satellite[satellite_num]))
-        
-        live_idx = each_client['live_idx']
-        data_idx = min(len(each_client['data_queue'])-1,self.data_idx+1)
         data_queue = each_client['data_queue']
+
+        if self.control_satellite_num == satellite_num:
+            data_idx = min(len(data_queue)-1,self.data_idx+1)
+        else :
+            idx, min_norm = 0, np.inf
+
+            for i in range(len(each_client['data_queue'])):
+                if min_norm > abs(self.now_time - self.ts.utc(*tuple(data_queue[i].t))):
+                    idx = i
+                    min_norm = abs(self.now_time - self.ts.utc(*tuple(data_queue[i].t)))
+
+            data_idx = idx
+
+        if self.control_satellite_num == satellite_num :
+            live_idx = each_client['live_idx']
+        else :
+            standard_time = self.ts.utc(*tuple(self.client_recieve[self.control_satellite_num]['data_queue'][self.client_recieve[self.control_satellite_num]['live_idx']].t))
+            idx, min_norm = 0, np.inf
+
+            for i in range(len(each_client['data_queue'])):
+                if min_norm > abs(standard_time - self.ts.utc(*tuple(data_queue[i].t))):
+                    idx = i
+                    min_norm = abs(standard_time - self.ts.utc(*tuple(data_queue[i].t)))
+
+            live_idx = idx
+        
 
         if self.program_mode == 'live':
             data_update = data_queue[live_idx]
@@ -345,9 +419,8 @@ class program_manage(internal_function):
             data_update = data_queue[data_idx]
         #all_data = {}
 
-
-        now_sat.actor['main_text'] = self.pl.add_text(("%d/%d/%d    %d:%d:%d" % tuple(data_update.t)),name = 'main_text')
-        print(now_sat.satellite)
+        if self.control_satellite_num == satellite_num:
+            self.actor['main_text'] = self.pl.add_text(("%d/%d/%d    %d:%d:%d" % tuple(data_update.t)),name = 'main_text')
 
         #print('hi')
         basis = np.array([[500,0,0],
@@ -356,8 +429,11 @@ class program_manage(internal_function):
 
         #all_data['time'] = self.ts.utc(*tuple(data_update.t))
     
+        if self.control_satellite_num == satellite_num:
+            self.now_time = self.ts.utc(*tuple(data_update.t))
+
         now_sat.now_time = self.ts.utc(*tuple(data_update.t))
-        now_sat.end_time = self.ts.utc(*tuple(data_update.t[:5] + [data_update.t[5] + 10000]))
+        now_sat.end_time = self.ts.utc(*tuple(data_update.t[:5] + [data_update.t[5] + 6000]))
         now_sat.time_gap = self.ts.utc(*tuple(data_update.t[:5] + [range(data_update.t[5],data_update.t[5] + 6000)]))
         
         now_sat.sat_location = data_update.location
@@ -381,10 +457,8 @@ class program_manage(internal_function):
                 #all_data['satellite_vector(%s)' % name] = np.array([self.sat_location , self.sat_location + 400*(self.sat_dcm@((vector).T)).T])
             else:    
                 now_sat.polydata['satellite_vector(%s)' % name] = pv.PolyData(np.array([now_sat.sat_location , now_sat.sat_location + 400*(now_sat.sat_dcm@((vector).T)).T]), lines=np.array([2,0,1]))
-                now_sat.actor['satellite_vector'][name] = (self.pl.add_mesh(now_sat.polydata['satellite_vector(%s)' % name], line_width = 1.5, color = color, name = 'satellite_vector%d' % i))
+                now_sat.actor['satellite_vector'][name] = (self.pl.add_mesh(now_sat.polydata['satellite_vector(%s)' % name], line_width = 1.5, color = color))
                 #all_data['satellite_vector(%s)' % name] = np.array([self.sat_location , self.sat_location + 400*(self.sat_dcm@((vector).T)).T])
-        
-        print(id(now_sat),id(self.added_satellite[satellite_num]))
 
     def update_trajectory(self,satellite_num):
         now_sat = self.added_satellite[satellite_num]
@@ -449,8 +523,11 @@ class program_manage(internal_function):
         tle_update = each_client['tle_update']
         now_sat.view_degree = tle_update[1]
 
+        if now_sat.satellite == None:
+            return
+
         lat, lon = math.asin(self.normalize(self.gs_location[2]/self.earth_radius)), math.atan2(self.gs_location[1], self.gs_location[0])
-        
+
         crisp = wgs84.latlon(lat, lon)
         t_deg, events_deg = now_sat.satellite.find_events(crisp, now_sat.now_time, now_sat.end_time, altitude_degrees=now_sat.view_degree)
 
@@ -533,7 +610,7 @@ def data_processing(buf, adress):
             length = struct.calcsize('4Bi5B')
             _, _, _, _, year, month, day, hour, min, sec = struct.unpack('4Bi5B', buf[:length])
             new_program.client_recieve[buf[2]]['time'] = [year, month, day, hour, min, sec]
-            #print(len(buf),buf,recieve_time)
+            print(new_program.client_recieve[buf[2]]['time'])
             buf = buf[length:]
         elif buf[3] == 0x01:
             #print(buf)
@@ -550,7 +627,6 @@ def data_processing(buf, adress):
             buf = buf[length:]
         elif buf[3] == 0x03:
             length = struct.calcsize('6B3f%ds%ds' % (buf[4],buf[5]))
-            print(buf,buf[:length])
             _, _, _, _, _, _,  x, y, z, name, color = struct.unpack(('6B3f%ds%ds' % (buf[4],buf[5])),buf[:length])
             
             new_program.client_recieve[buf[2]]['vector'].append((name.decode(),color.decode(),np.array([x, y ,z])))

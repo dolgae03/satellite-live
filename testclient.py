@@ -4,7 +4,7 @@ import time
 import numpy
 import math
 import numpy as np
-from skyfield.api import load, wgs84
+from skyfield.api import load, wgs84, EarthSatellite
 from program_connection import *
 
 def lat_lon_at(satellite, ti, earth_radius):
@@ -44,12 +44,13 @@ stations_url = 'https://celestrak.org/NORAD/elements/gp.php?INTDES=2022-072'
 satellites = load.tle_file(stations_url, reload=True)
 print('Loaded', len(satellites), 'satellites')
 
-satellite = {sat.model.satnum: sat for sat in satellites}[52935]
-print(satellite)
-
 line1 = 'DS-EO'
 line2 = '1 52935U 22072A   22216.15420356 -.00001113  00000+0 -14437-3 0  9995'
 line3 = '2 52935   9.9958 183.1620 000691  87.5122 272.5811 14.99607335  5188'
+
+l1 = 'OBJECT B'
+l2 = '1 52936U 22072B   22219.26924375  .00003894  00000+0  24644-3 0  9998'
+l3 = '2 52936   9.9883 160.1504 0006508 137.3253 222.7627 15.00258076  5663'
 
 ts = load.timescale()
 t = ts.now()
@@ -63,7 +64,12 @@ client_socket.send(sat.attitude_packet([0,0,0,1]))
 client_socket.send(sat.location_packet([1,0,0]))
 client_socket.send(sat.satellite_end_packet())
 
-client_socket.send(sat.tle_packet(line1, line2, line3))
+if sat.satellite_num == 1:
+    client_socket.send(sat.tle_packet(line1, line2, line3))
+    satellite = EarthSatellite(line2, line3, line1, ts)
+elif sat.satellite_num == 2:
+    client_socket.send(sat.tle_packet(l1, l2, l3))
+    satellite = EarthSatellite(l2, l3, l1, ts)
 client_socket.send(sat.view_degree_packet(5))
 client_socket.send(sat.tle_end_packet())
 #time.sleep(10)
@@ -72,7 +78,10 @@ for ti in time_gap:
     loc = lat_lon_at(satellite, ti, earth_radius)
     a = np.random.randint(10, size=4) 
     a = a / np.linalg.norm(a)
-    p1 = sat.time_packet(2022,8,5,0,0,0)
+
+    y, m, d = int(ti.utc.year), int(ti.utc.month), int(ti.utc.day)
+    h, mi, se = int(ti.utc.hour), int(ti.utc.minute), int(ti.utc.second)
+    p1 = sat.time_packet(y, m, d, h, mi, se)
     p2 = sat.attitude_packet(a)
     p3 = sat.location_packet(loc)
     p4 = sat.vector_packet('helasdlo','purple',[1,1,1])
@@ -80,9 +89,8 @@ for ti in time_gap:
 
     packet_list.append((p1, p2, p3, p4, p5))
 
-print([packet_list])
-
 for ele in packet_list:
+    print(ele[0])
     for pac in ele:
         client_socket.send(pac)
     time.sleep(1)
