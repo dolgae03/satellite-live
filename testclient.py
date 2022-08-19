@@ -19,9 +19,9 @@ def lat_lon_at(satellite, ti, earth_radius):
 def lat_lon_rotation(lat, lon, vector):
     s = math.sin(lat * math.pi / 180)
     c = math.cos(lat * math.pi / 180)
-    dcm_y = np.array([[c, 0, s],
+    dcm_y = np.array([[c, 0, -s],
                       [0, 1, 0],
-                      [-s, 0, c]])
+                      [s, 0, c]])
 
     s = math.sin(lon * math.pi / 180)
     c = math.cos(lon * math.pi / 180)
@@ -32,9 +32,6 @@ def lat_lon_rotation(lat, lon, vector):
     res = (dcm_z @ (dcm_y @ vector))
 
     return res.T
-
-client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-client_socket.connect(('127.0.0.1', 30000))
 
 earth_radius = 6378.1
 loca = [np.array([earth_radius*1.3, 0, 0]), np.array([0, 8000, 0])]
@@ -48,31 +45,21 @@ line1 = 'DS-EO'
 line2 = '1 52935U 22072A   22216.15420356 -.00001113  00000+0 -14437-3 0  9995'
 line3 = '2 52935   9.9958 183.1620 000691  87.5122 272.5811 14.99607335  5188'
 
-l1 = 'OBJECT B'
-l2 = '1 52936U 22072B   22219.26924375  .00003894  00000+0  24644-3 0  9998'
-l3 = '2 52936   9.9883 160.1504 0006508 137.3253 222.7627 15.00258076  5663'
-
 ts = load.timescale()
 t = ts.now()
 i=0
-time_gap = ts.utc(2022,8,5,0,0,range(0,120))
+time_gap = ts.utc(2022,8,19,10,28,range(0,120))
 packet_list = []
-sat = satellite_packet(int(input()))
+sat = SatellitePacketManage(1,'127.0.0.1',30000, 'itrs')
 
-client_socket.send(sat.time_packet(2022,8,5,0,0,0))
-client_socket.send(sat.attitude_packet([0,0,0,1]))
-client_socket.send(sat.location_packet([1,0,0]))
-client_socket.send(sat.satellite_end_packet())
 
-if sat.satellite_num == 1:
-    client_socket.send(sat.tle_packet(line1, line2, line3))
-    satellite = EarthSatellite(line2, line3, line1, ts)
-elif sat.satellite_num == 2:
-    client_socket.send(sat.tle_packet(l1, l2, l3))
-    satellite = EarthSatellite(l2, l3, l1, ts)
-client_socket.send(sat.view_degree_packet(5))
-client_socket.send(sat.tle_end_packet())
+sat.send(sat.tle_packet(line1, line2, line3))
+satellite = EarthSatellite(line2, line3, line1, ts)
+sat.send(sat.view_degree_packet(5))
+sat.send(sat.tle_end_packet())
 #time.sleep(10)
+
+print(satellite)
 
 for ti in time_gap:
     loc = lat_lon_at(satellite, ti, earth_radius)
@@ -85,14 +72,13 @@ for ti in time_gap:
     p2 = sat.attitude_packet(a)
     p3 = sat.location_packet(loc)
     p4 = sat.vector_packet('helasdlo','purple',[1,1,1])
-    p5 = sat.satellite_end_packet()
+    p5 = sat.vector_packet('heldlo','yellow',[1,1,0])
+    p6 = sat.satellite_end_packet()
+    print(ti.utc_strftime(),loc)
 
-    packet_list.append((p1, p2, p3, p4, p5))
+    for pac in (p1, p2, p3, p4,p5,p6):
+        sat.send(pac)
 
-for ele in packet_list:
-    print(ele[0])
-    for pac in ele:
-        client_socket.send(pac)
     time.sleep(1)
 
-client_socket.close()
+sat.close()

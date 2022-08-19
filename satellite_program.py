@@ -11,28 +11,6 @@ import struct
 
 from threading import Thread, Lock
 
-class EnableCallback:
-    def __init__(self, actor, pl):
-        self.actor = actor
-        self.pl = pl
-
-    def __call__(self):
-        for ele in self.actor:
-            self.pl.add_actor(ele)
-
-class DisableCallback:
-    def __init__(self, actor, pl):
-        self.actor = actor
-        self.pl = pl
-    
-    def __call__(self):
-        for ele in self.actor:
-            self.pl.remove_actor(ele)
-
-class SelectSatelliteCallback:
-    def __init__(self, num):
-        pass
-
 class satrac_info:
     def __init__(self, t, location, attitude, vector):
         self.t = t
@@ -125,9 +103,9 @@ class internal_function:
     def lat_lon_rotation(self, lat, lon, vector):
         s = math.sin(lat * math.pi / 180)
         c = math.cos(lat * math.pi / 180)
-        dcm_y = np.array([[c, 0, s],
+        dcm_y = np.array([[c, 0, -s],
                         [0, 1, 0],
-                        [-s, 0, c]])
+                        [s, 0, c]])
 
         s = math.sin(lon * math.pi / 180)
         c = math.cos(lon * math.pi / 180)
@@ -157,7 +135,7 @@ class internal_function:
             pl.remove_actor(ele)
         
 class program_manage(internal_function):
-    def __init__(self, gs_location, sat_location):
+    def __init__(self, gs_location):
         self.program_mode = 'live'
         self.client_recieve = {}
 
@@ -166,8 +144,11 @@ class program_manage(internal_function):
 
 
         self.load = Loader('./data')
-        self.gs_location = gs_location
         self.earth_radius = 6378.1
+        self.gs_lat_lon = gs_location
+        self.gs_location = self.lat_lon_rotation(gs_location[0], gs_location[1],np.array([self.earth_radius, 0, 0]))
+        
+        
         self.eph = self.load('de421.bsp')
         self.ts = self.load.timescale()
         
@@ -180,12 +161,14 @@ class program_manage(internal_function):
 
         self.lock = Lock()
         
-        self.working = False
         self.time_gap = None
+        self.duration = 4000
+
+        self.communication_thread = Thread(target=self.take_client_connection, daemon= True)
+        self.communication_thread.daemon = True
+        self.communication_thread.start()
 
     def start_program(self):
-        global gs_mesh
-
         sphere = pv.Sphere(radius=self.earth_radius, theta_resolution=240, phi_resolution=240, start_theta=270.0001, end_theta=270)
         sphere.active_t_coords = np.zeros((sphere.points.shape[0], 2))
 
@@ -212,24 +195,14 @@ class program_manage(internal_function):
         reader = pv.get_reader('./data/antenna.stl')
         gs_mesh = reader.read()
         gs_scale = 2
-        gs_dcm = self.rotation_matrix_from_vectors(np.array([0,1,0]), np.array(gs_location))
-        
-        self.actor['main_text'] = self.pl.add_text('-',name = 'main_text')
-
-        '''
-        reader = pv.get_reader('./data/satellite.stl')
-        self.polydata['satellite'] = reader.read()
-        self.sat_scale = 30
-        '''
+        gs_dcm = self.rotation_matrix_from_vectors(np.array([0,1,0]), self.gs_location)
 
         for i in range(gs_mesh.points.shape[0]):
-            gs_mesh.points[i] = (gs_dcm @ (gs_mesh.points[i].T)).T * gs_scale + gs_location
-        '''
-        for i in range(self.polydata['satellite'].points.shape[0]):
-            self.polydata['satellite'].points[i] = ((self.sat_dcm @ (self.polydata['satellite'].points[i].T)).T)*self.sat_scale + self.sat_location
-        '''
+            gs_mesh.points[i] = (gs_dcm @ (gs_mesh.points[i].T)).T * gs_scale + self.gs_location
+
         self.actor['groundstation'] = self.pl.add_mesh(gs_mesh)
-        #self.actor['satellite'] = self.pl.add_mesh(self.polydata['satellite'], name = 'satellite')
+        
+        self.actor['main_text'] = self.pl.add_text('-',name = 'main_text')
 
         for i in range(3):
             self.polydata['earth_axis%d' % i] = pv.PolyData(np.array([[0,0,0], basis[i]/500*self.earth_radius*1.3]), lines=np.array([2,0,1]))
@@ -295,18 +268,14 @@ class program_manage(internal_function):
         sat = self.added_satellite[self.control_satellite_num]
         
         if sat.trajectory_active:
-            #self.working = True
             for ele1, ele2 in zip(sat.actor['satellite_dark_trajectory'],sat.actor['satellite_bright_trajectory']):
                 sat.pl.remove_actor(ele1)
                 sat.pl.remove_actor(ele2)
-            #self.working = False
             sat.trajectory_active = False
         else :
-            #self.working = True
             for ele1, ele2 in zip(sat.actor['satellite_dark_trajectory'],sat.actor['satellite_bright_trajectory']):
                 sat.pl.add_actor(ele1)
                 sat.pl.add_actor(ele2)
-            #self.working = False
             sat.trajectory_active = True
 
     def satellite_vector_callback(self):
@@ -417,24 +386,20 @@ class program_manage(internal_function):
             data_update = data_queue[live_idx]
         else :
             data_update = data_queue[data_idx]
-        #all_data = {}
 
         if self.control_satellite_num == satellite_num:
             self.actor['main_text'] = self.pl.add_text(("%d/%d/%d    %d:%d:%d" % tuple(data_update.t)),name = 'main_text')
 
-        #print('hi')
         basis = np.array([[500,0,0],
                           [0,500,0],
                           [0,0,500]])
-
-        #all_data['time'] = self.ts.utc(*tuple(data_update.t))
     
         if self.control_satellite_num == satellite_num:
             self.now_time = self.ts.utc(*tuple(data_update.t))
 
         now_sat.now_time = self.ts.utc(*tuple(data_update.t))
-        now_sat.end_time = self.ts.utc(*tuple(data_update.t[:5] + [data_update.t[5] + 6000]))
-        now_sat.time_gap = self.ts.utc(*tuple(data_update.t[:5] + [range(data_update.t[5],data_update.t[5] + 6000)]))
+        now_sat.end_time = self.ts.utc(*tuple(data_update.t[:5] + [data_update.t[5] + self.duration]))
+        now_sat.time_gap = self.ts.utc(*tuple(data_update.t[:5] + [range(data_update.t[5],data_update.t[5] + self.duration)]))
         
         now_sat.sat_location = data_update.location
         now_sat.sat_vector = data_update.vector
@@ -442,23 +407,16 @@ class program_manage(internal_function):
         now_sat.sat_dcm = self.q_t_d(data_update.attitude)
         sat_att = (now_sat.sat_dcm @ basis).T
 
-        '''
-        for i in range(self.polydata['satellite'].points.shape[0]):
-            self.polydata['satellite'].points[i] = ((self.sat_dcm @ (self.polydata['satellite'].points[i].T)).T)*self.sat_scale + self.sat_location
-        '''
 
         for i in range(3):
             now_sat.polydata['satellite_axis%d' % i].points = np.array([now_sat.sat_location + sat_att[i],now_sat.sat_location])
-            #all_data['satellite_axis%d' % i] = np.array([self.sat_location + sat_att[i],self.sat_location])
-        
+       
         for (name, color, vector), i in zip(now_sat.sat_vector, range(len(now_sat.sat_vector))):
             if 'satellite_vector(%s)' % name in now_sat.polydata:
                 now_sat.polydata['satellite_vector(%s)' % name].points = np.array([now_sat.sat_location , now_sat.sat_location + 400*(now_sat.sat_dcm@((vector).T)).T])
-                #all_data['satellite_vector(%s)' % name] = np.array([self.sat_location , self.sat_location + 400*(self.sat_dcm@((vector).T)).T])
             else:    
                 now_sat.polydata['satellite_vector(%s)' % name] = pv.PolyData(np.array([now_sat.sat_location , now_sat.sat_location + 400*(now_sat.sat_dcm@((vector).T)).T]), lines=np.array([2,0,1]))
                 now_sat.actor['satellite_vector'][name] = (self.pl.add_mesh(now_sat.polydata['satellite_vector(%s)' % name], line_width = 1.5, color = color))
-                #all_data['satellite_vector(%s)' % name] = np.array([self.sat_location , self.sat_location + 400*(self.sat_dcm@((vector).T)).T])
 
     def update_trajectory(self,satellite_num):
         now_sat = self.added_satellite[satellite_num]
@@ -468,19 +426,16 @@ class program_manage(internal_function):
         if now_sat.time_gap == None:
             return
 
-        print(tle_update)
-        print(EarthSatellite(tle_update[0][1], tle_update[0][2], tle_update[0][0], now_sat.ts))
         now_sat.satellite = EarthSatellite(tle_update[0][1], tle_update[0][2], tle_update[0][0], now_sat.ts)
-        print(now_sat.satellite)
 
         sat_trac = [[],[]]
         sat_trac_bright = []
         sat_trac_dark = []
 
         key = True
-
         for ti in now_sat.time_gap:
             loc = self.lat_lon_at(now_sat.satellite, ti, self.earth_radius)
+            
             sunlit = now_sat.satellite.at(ti).is_sunlit(self.eph)
         
             if sunlit :
@@ -526,7 +481,7 @@ class program_manage(internal_function):
         if now_sat.satellite == None:
             return
 
-        lat, lon = math.asin(self.normalize(self.gs_location[2]/self.earth_radius)), math.atan2(self.gs_location[1], self.gs_location[0])
+        lat, lon = self.gs_lat_lon
 
         crisp = wgs84.latlon(lat, lon)
         t_deg, events_deg = now_sat.satellite.find_events(crisp, now_sat.now_time, now_sat.end_time, altitude_degrees=now_sat.view_degree)
@@ -560,129 +515,112 @@ class program_manage(internal_function):
 
         each_client['tle_update'] = None
 
-def data_receiving(client_socket,adress):
-    #buf = [0 for i in range(1000)]
-    
-    while True:
-        try: 
-            buf = client_socket.recv(1024*9)
-        except:
-            client_socket.close()
-            return 
+    def data_receiving(self,client_socket,adress):
+        while True:
+            try: 
+                buf = client_socket.recv(1024*9)
+            except:
+                client_socket.close()
+                return 
 
-        if buf == b'':
-            client_socket.close()
-            return
+            if buf == b'':
+                client_socket.close()
+                return
 
-        data_processing(buf, adress)
+            self.data_processing(buf, adress)
 
+    def data_processing(self,buf, adress):
 
-#0, 1 시작 개시 2번 통신 코드
-#0번은 time
-#1번은 location
-#2번은 attitude
-#3번은 vector
-#4번은 이를 적용
-#0번은 
+        dic = self.client_recieve
 
-def data_processing(buf, adress):
-    global new_program
-
-    while len(buf) > 1:
-        #print(buf)
-        if buf[0] != 0x96 or buf[1] !=0x00:
-            return
-    
-        new_program.lock.acquire()
-        if buf[2] not in new_program.client_recieve:
-            new_program.client_recieve[buf[2]] = {'time':None,
-                                                  'location':None,
-                                                  'attitude':None,
-                                                  'vector':[],
-                                                  'data_queue':[],
-                                                  'data_idx':-1,
-                                                  'live_idx':-1,
-                                                  'tle_update':None,
-                                                  'tle':None,
-                                                  'degree':None}
-
-        if buf[3] == 0x00:
-            length = struct.calcsize('4Bi5B')
-            _, _, _, _, year, month, day, hour, min, sec = struct.unpack('4Bi5B', buf[:length])
-            new_program.client_recieve[buf[2]]['time'] = [year, month, day, hour, min, sec]
-            print(new_program.client_recieve[buf[2]]['time'])
-            buf = buf[length:]
-        elif buf[3] == 0x01:
-            #print(buf)
-            length = struct.calcsize('4B3f')
-            _, _, _, _, x, y, z = struct.unpack('4B3f',buf[:length])
-            new_program.client_recieve[buf[2]]['location'] = np.array([x, y ,z])
-            #print(len(buf),buf, client_recieve[buf[2]]['location'])
-            buf = buf[length:]
-        elif buf[3] == 0x02:
-            length = struct.calcsize('4B4f')
-            _, _, _, _, q1, q2, q3, q4 = struct.unpack('4B4f',buf[:length])
-            new_program.client_recieve[buf[2]]['attitude'] = np.array([q1, q2, q3, q4])
-            #print(len(buf),buf, client_recieve[buf[2]]['attitude'])
-            buf = buf[length:]
-        elif buf[3] == 0x03:
-            length = struct.calcsize('6B3f%ds%ds' % (buf[4],buf[5]))
-            _, _, _, _, _, _,  x, y, z, name, color = struct.unpack(('6B3f%ds%ds' % (buf[4],buf[5])),buf[:length])
-            
-            new_program.client_recieve[buf[2]]['vector'].append((name.decode(),color.decode(),np.array([x, y ,z])))
-            #print(len(buf),buf, recieve_vec)
-            buf = buf[length:]
-        elif buf[3] == 0x04:
-            length = struct.calcsize('4B')
-            a = new_program.client_recieve[buf[2]]
-            new_program.client_recieve[buf[2]]['data_queue'].append(satrac_info(a['time'], a['location'], a['attitude'],a['vector']))
-            #print(data_queue, data_update)
-            buf = buf[length:]
-
-        elif buf[3] == 0x05:
-            length = struct.calcsize('4B3B%ds%ds%ds' % (buf[4],buf[5],buf[6]))
-            _, _, _, _, _, _, _, line1, line2, line3 = struct.unpack(('4B3B%ds%ds%ds' % (buf[4],buf[5],buf[6])),buf[:length])
-            new_program.client_recieve[buf[2]]['tle'] = [line1.decode(), line2.decode(), line3.decode()]
-            
-            buf = buf[length:]
-           
+        while len(buf) > 1:
+            if buf[0] != 0x96 or buf[1] !=0x00:
+                return
         
-        elif buf[3] == 0x06:
-            length = struct.calcsize('5B')
-            _, _, _, _, degree = struct.unpack('5B',buf[:length])
-            new_program.client_recieve[buf[2]]['degree'] = degree
-            buf = buf[length:]
+            self.lock.acquire()
+            if buf[2] not in dic:
+                dic[buf[2]] =  {'time':None,
+                                'location':None,
+                                'attitude':None,
+                                'vector':[],
+                                'data_queue':[],
+                                'live_idx':-1,
+                                'tle_update':None,
+                                'tle':None,
+                                'degree':None}
 
-        elif buf[3] == 0x07:
-            length = struct.calcsize('5B')
-            new_program.client_recieve[buf[2]]['tle_update'] = (new_program.client_recieve[buf[2]]['tle'], new_program.client_recieve[buf[2]]['degree'])
+            try:
+                if buf[3] == 0x00:
+                    length = struct.calcsize('4Bi5B')
+                    _, _, _, _, year, month, day, hour, min, sec = struct.unpack('4Bi5B', buf[:length])
+                    dic[buf[2]]['time'] = [year, month, day, hour, min, sec]
+                    buf = buf[length:]
+
+                elif buf[3] == 0x01:
+                    length = struct.calcsize('4B3f')
+                    _, _, _, _, x, y, z = struct.unpack('4B3f',buf[:length])
+                    dic[buf[2]]['location'] = np.array([x, y ,z])
+                    #print(np.array([x, y ,z]))
+                    buf = buf[length:]
+                elif buf[3] == 0x02:
+                    length = struct.calcsize('4B4f')
+                    _, _, _, _, q1, q2, q3, q4 = struct.unpack('4B4f',buf[:length])
+                    dic[buf[2]]['attitude'] = np.array([q1, q2, q3, q4])
+                    buf = buf[length:]
+
+                elif buf[3] == 0x03:
+                    length = struct.calcsize('6B3f%ds%ds' % (buf[4],buf[5]))
+                    _, _, _, _, _, _,  x, y, z, name, color = struct.unpack(('6B3f%ds%ds' % (buf[4],buf[5])),buf[:length])
+                    
+                    dic[buf[2]]['vector'].append((name.decode(),color.decode(),np.array([x, y ,z])))
+                    buf = buf[length:]
+
+                elif buf[3] == 0x04:
+                    length = struct.calcsize('4B')
+                    a = dic[buf[2]]
+                    dic[buf[2]]['data_queue'].append(satrac_info(a['time'], a['location'], a['attitude'],a['vector']))
+                    buf = buf[length:]
+
+                elif buf[3] == 0x05:
+                    length = struct.calcsize('4B3B%ds%ds%ds' % (buf[4],buf[5],buf[6]))
+                    _, _, _, _, _, _, _, line1, line2, line3 = struct.unpack(('4B3B%ds%ds%ds' % (buf[4],buf[5],buf[6])),buf[:length])
+                    dic[buf[2]]['tle'] = [line1.decode(), line2.decode(), line3.decode()]
+                    buf = buf[length:]
+                
+                
+                elif buf[3] == 0x06:
+                    length = struct.calcsize('5B')
+                    _, _, _, _, degree = struct.unpack('5B',buf[:length])
+                    dic[buf[2]]['degree'] = degree
+                    buf = buf[length:]
+
+                elif buf[3] == 0x07:
+                    length = struct.calcsize('5B')
+                    dic[buf[2]]['tle_update'] = (dic[buf[2]]['tle'], dic[buf[2]]['degree'])
+                    
+                    buf = buf[length:]
+
+                else :
+                    buf = []
+            except :
+                buf = []
             
-            buf = buf[length:]
+            self.lock.release()
 
-        else :
-            buf = []
-        new_program.lock.release()
+    def take_client_connection(self):
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.bind(('127.0.0.1', 30000))
+        server_socket.listen(5)
 
-def take_client_connection():
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind(('127.0.0.1', 30000))
-    server_socket.listen(5)
+        while True:
+            (client_socket, address) = server_socket.accept()
 
-    while True:
-        (client_socket, address) = server_socket.accept()
+            th1 = Thread(target=self.data_receiving, args=(client_socket, address), daemon = True)
+            th1.start()
 
-        th1 = Thread(target=data_receiving, args=(client_socket, address), daemon = True)
-        th1.start()
 
-gs_location = [6378.1,0,0]
+if __name__ == '__main__':
+    gs_location = (1.2833, 103.85)
 
-#reader = pv.get_reader('./data/satellite.stl')
-#sat_mesh = reader.read()
-#sat_scale = 30
-
-th1 = Thread(target=take_client_connection, daemon= True)
-th1.daemon = True
-th1.start()
-
-new_program = program_manage(gs_location, np.array([6378.1*1.3, 0, 0]))
-new_program.start_program()
+    new_program = program_manage(gs_location)
+    new_program.start_program()
